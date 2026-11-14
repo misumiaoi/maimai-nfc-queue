@@ -6,8 +6,7 @@
 #include <GxEPD2_BW.h>
 #include <SPI.h>
 #include <stdio.h>
-
-#include "config.h"
+#include <string.h>
 
 namespace {
 
@@ -21,6 +20,7 @@ Panel g_epd(PanelDriver(config::kPinEpdCs, config::kPinEpdDc, config::kPinEpdRst
 
 constexpr int kHeaderHeight = 40;
 constexpr int kRowHeight = 30;
+constexpr int kFooterTop = 274;
 constexpr int kFooterY = 292;
 
 /** 以给定基线位置画一段文字。 */
@@ -40,30 +40,147 @@ int textWidth(const GFXfont* font, const char* text) {
   return w;
 }
 
+/** 把秒数格式化成上机时长，超过一位数分钟就用 "12m"+ 的形式省空间。 */
+void formatElapsed(uint32_t ms, char* out, size_t cap) {
+  const uint32_t minutes = ms / 60000UL;
+  if (ms >= config::kPlayLimitMs) {
+    snprintf(out, cap, ">%lum", static_cast<unsigned long>(config::kPlayLimitMs / 60000UL));
+  } else {
+    snprintf(out, cap, "%lum", static_cast<unsigned long>(minutes));
+  }
+}
+
 }  // namespace
 
 void QueueDisplay::begin() {
   SPI.begin(config::kPinEpdSck, -1, config::kPinEpdMosi, config::kPinEpdCs);
   g_epd.init(115200, true, 2, false);
   g_epd.setRotation(0);
+  last_.valid = false;
 }
 
-void QueueDisplay::render(const QueueManager& queue, const char* message) {
-  const bool full = (refreshCount_ % config::kFullRefreshEvery) == 0;
-  ++refreshCount_;
+void QueueDisplay::buildFrame(const QueueManager& queue, const char* message, int highlight,
+                              Frame* out) const {
+  memset(out, 0, sizeof(*out));
+  out->valid = true;
+  out->highlight = highlight;
+  out->pending = queue.pendingIndex();
 
-  if (full) {
+  const size_t n = queue.size();
+  snprintf(out->header, sizeof(out->header), "%u waiting", static_cast<unsigned>(n));
+
+  const size_t visible = n < config::kVisibleRows ? n : config::kVisibleRows;
+  out->visible = static_cast<int>(visible);
+
+  const uint32_t nowMs = millis();
+  for (size_t i = 0; i < visible; ++i) {
+    char label[kTailDigits + 1];
+    queue.label(i, label);
+
+    char clock[8] = "";
+    if (queue.isPlaying(i)) {
+      formatElapsed(queue.playingForMs(i, nowMs), clock, sizeof(clock));
+    }
+
+    snprintf(out->rows[i], sizeof(out->rows[i]), "%2u %s %s", static_cast<unsigned>(i + 1), label,
+             clock);
+  }
+
+  if (message != nullptr) {
+    snprintf(out->footer, sizeof(out->footer), "%s", message);
+  } else if (queue.hasPending()) {
+    snprintf(out->footer, sizeof(out->footer), "TAP AGAIN TO LEAVE");
+  } else if (n > visible) {
+    snprintf(out->footer, sizeof(out->footer), "+%u MORE  TAP TO JOIN",
+             static_cast<unsigned>(n - visible));
+  } else {
+    snprintf(out->footer, sizeof(out->footer), "TAP CARD TO JOIN");
+  }
+}
+
+void QueueDisplay::drawFrame(const Frame& frame) {
+  const int width = g_epd.width();
+  g_epd.fillScreen(GxEPD_WHITE);
+
+  drawText(&FreeMonoBold18pt7b, 8, 28, GxEPD_BLACK, "MAIMAI QUEUE");
+  drawText(&FreeMonoBold12pt7b, width - 8 - textWidth(&FreeMonoBold12pt7b, frame.header), 24,
+           GxEPD_BLACK, frame.header);
+  g_epd.drawLine(0, kHeaderHeight - 4, width, kHeaderHeight - 4, GxEPD_BLACK);
+
+  for (int i = 0; i < frame.visible; ++i) {
+    const int top = kHeaderHeight + i * kRowHeight;
+    const int baseline = top + 24;
+    const bool inverted = i == frame.pending || i == frame.highlight;
+    const uint16_t fg = inverted ? GxEPD_WHITE : GxEPD_BLACK;
+
+    if (inverted) g_epd.fillRect(0, top, width, kRowHeight, GxEPD_BLACK);
+    drawText(&FreeMonoBold12pt7b, 8, baseline, fg, frame.rows[i]);
+  }
+
+  g_epd.drawLine(0, kFooterTop - 18, width, kFooterTop - 18, GxEPD_BLACK);
+  drawText(&FreeMonoBold12pt7b, 8, kFooterY, GxEPD_BLACK, frame.footer);
+}
+
+void QueueDisplay::render(const QueueManager& queue, const char* message, int highlight) {
+  Frame frame;
+  buildFrame(queue, message, highlight, &frame);
+
+  const bool fullRefresh = !last_.valid || (refreshCount_ % config::kFullRefreshEvery) == 0;
+
+  if (fullRefresh) {
     g_epd.setFullWindow();
   } else {
-    g_epd.setPartialWindow(0, 0, g_epd.width(), g_epd.height());
+    int top = 10000;
+    int bottom = -1;
+
+    if (strcmp(last_.header, frame.header) != 0) {
+      top = 0;
+      bottom = kHeaderHeight;
+    }
+
+    const int rows = last_.visible > frame.visible ? last_.visible : frame.visible;
+    for (int i = 0; i < rows; ++i) {
+      const char* before = i < last_.visible ? last_.rows[i] : "";
+      const char* after = i < frame.visible ? frame.rows[i] : "";
+      bool changed = strcmp(before, after) != 0;
+      if (!changed) changed = (i == last_.pending) != (i == frame.pending);
+      if (!changed) changed = (i == last_.highlight) != (i == frame.highlight);
+      if (changed) {
+        const int rowTop = kHeaderHeight + i * kRowHeight;
+        if (rowTop < top) top = rowTop;
+        if (rowTop + kRowHeight > bottom) bottom = rowTop + kRowHeight;
+      }
+    }
+
+    if (strcmp(last_.footer, frame.footer) != 0) {
+      if (kFooterTop - 18 < top) top = kFooterTop - 18;
+      if (g_epd.height() > bottom) bottom = g_epd.height();
+    }
+
+    if (bottom <= top) {
+      // 内容没变，不碰屏幕，省一次闪烁和几百毫秒。
+      return;
+    }
+
+    // 墨水屏按 8 像素一页寻址，窗口边界不对会出现错行，这里先对齐。
+    top &= ~7;
+    bottom = (bottom + 7) & ~7;
+    if (bottom > g_epd.height()) bottom = g_epd.height();
+
+    g_epd.setPartialWindow(0, top, g_epd.width(), bottom - top);
   }
+
+  ++refreshCount_;
   g_epd.firstPage();
   do {
-    drawQueue(queue, message);
+    drawFrame(frame);
   } while (g_epd.nextPage());
+
+  last_ = frame;
 }
 
 void QueueDisplay::showFatal(const char* message) {
+  last_.valid = false;
   g_epd.setFullWindow();
   g_epd.firstPage();
   do {
@@ -71,56 +188,4 @@ void QueueDisplay::showFatal(const char* message) {
     drawText(&FreeMonoBold18pt7b, 10, 120, GxEPD_BLACK, "ERROR");
     drawText(&FreeMonoBold12pt7b, 10, 170, GxEPD_BLACK, message);
   } while (g_epd.nextPage());
-}
-
-void QueueDisplay::drawQueue(const QueueManager& queue, const char* message) {
-  const int width = g_epd.width();
-  g_epd.fillScreen(GxEPD_WHITE);
-
-  char text[40];
-
-  drawText(&FreeMonoBold18pt7b, 8, 28, GxEPD_BLACK, "MAIMAI QUEUE");
-  snprintf(text, sizeof(text), "%u", static_cast<unsigned>(queue.size()));
-  drawText(&FreeMonoBold18pt7b, width - 8 - textWidth(&FreeMonoBold18pt7b, text), 28,
-           GxEPD_BLACK, text);
-  g_epd.drawLine(0, kHeaderHeight - 4, width, kHeaderHeight - 4, GxEPD_BLACK);
-
-  const size_t playSlots = static_cast<size_t>(config::kMachineCount) * 2;
-  const size_t visible = queue.size() < config::kVisibleRows ? queue.size() : config::kVisibleRows;
-  const int pending = queue.pendingIndex();
-
-  for (size_t i = 0; i < visible; ++i) {
-    const int top = kHeaderHeight + static_cast<int>(i) * kRowHeight;
-    const int baseline = top + 24;
-    const bool inverted = static_cast<int>(i) == pending;
-    const uint16_t fg = inverted ? GxEPD_WHITE : GxEPD_BLACK;
-
-    if (inverted) g_epd.fillRect(0, top, width, kRowHeight, GxEPD_BLACK);
-
-    char label[kTailDigits + 1];
-    queue.label(i, label);
-    snprintf(text, sizeof(text), "%2u  %s", static_cast<unsigned>(i + 1), label);
-    drawText(&FreeMonoBold18pt7b, 8, baseline, fg, text);
-
-    if (i < playSlots) {
-      drawText(&FreeMonoBold18pt7b, width - 8 - textWidth(&FreeMonoBold18pt7b, "PLAY"),
-               baseline, fg, "PLAY");
-    }
-    if (i + 1 == playSlots && queue.size() > playSlots && !inverted) {
-      g_epd.drawLine(0, top + kRowHeight - 1, width, top + kRowHeight - 1, GxEPD_BLACK);
-    }
-  }
-
-  if (queue.size() > visible) {
-    snprintf(text, sizeof(text), "+%u MORE", static_cast<unsigned>(queue.size() - visible));
-    drawText(&FreeMonoBold12pt7b, width - 8 - textWidth(&FreeMonoBold12pt7b, text),
-             kFooterY - 22, GxEPD_BLACK, text);
-  }
-
-  g_epd.drawLine(0, kFooterY - 18, width, kFooterY - 18, GxEPD_BLACK);
-  const char* footer = message;
-  if (footer == nullptr) {
-    footer = queue.hasPending() ? "TAP AGAIN TO LEAVE" : "TAP CARD TO JOIN";
-  }
-  drawText(&FreeMonoBold12pt7b, 8, kFooterY, GxEPD_BLACK, footer);
 }
