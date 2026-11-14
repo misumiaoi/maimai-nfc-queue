@@ -10,6 +10,7 @@ Preferences g_prefs;
 const char* const kNamespace = "mai-queue";
 const char* const kKeyQueue = "queue";
 const char* const kKeySalt = "salt";
+const char* const kKeyAdmin = "staff";
 
 }  // namespace
 
@@ -26,7 +27,7 @@ uint64_t QueueStorage::loadOrCreateSalt() {
 }
 
 bool QueueStorage::load(QueueManager& queue) {
-  size_t len = g_prefs.getBytesLength(kKeyQueue);
+  const size_t len = g_prefs.getBytesLength(kKeyQueue);
   if (len == 0 || len > QueueManager::kMaxSerializedBytes) return false;
 
   uint8_t buf[QueueManager::kMaxSerializedBytes];
@@ -36,7 +37,15 @@ bool QueueStorage::load(QueueManager& queue) {
 
 bool QueueStorage::save(const QueueManager& queue) {
   uint8_t buf[QueueManager::kMaxSerializedBytes];
-  size_t n = queue.serialize(buf, sizeof(buf));
+  const size_t n = queue.serialize(buf, sizeof(buf));
   if (n == 0) return false;
   return g_prefs.putBytes(kKeyQueue, buf, n) == n;
 }
+
+uint64_t QueueStorage::loadAdminHash() { return g_prefs.getULong64(kKeyAdmin, 0); }
+
+bool QueueStorage::saveAdminHash(uint64_t hash) {
+  return g_prefs.putULong64(kKeyAdmin, hash) == sizeof(hash);
+}
+
+bool QueueStorage::clearAdminHash() { return g_prefs.remove(kKeyAdmin); }
