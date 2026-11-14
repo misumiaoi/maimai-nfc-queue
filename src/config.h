@@ -29,11 +29,8 @@ constexpr uint8_t kPinSkipButton = 27;
 /** 机厅的舞萌机台数。每台机两个人同时上机，所以屏幕上前 2 * 台数 个位置标 PLAY。 */
 constexpr uint8_t kMachineCount = 1;
 
-/** 在队列里的卡第一次刷后，要在这个时间内再刷一次才算退出（毫秒）。 */
+/** 退出提示刷新完成且卡移开后，要在这个时间内再刷一次才算退出（毫秒）。 */
 constexpr uint32_t kConfirmWindowMs = 5000;
-
-/** 处理完一次刷卡后，最长等待卡片离开读卡器的时间（毫秒）。 */
-constexpr uint32_t kRemovalWaitMs = 3000;
 
 /** 单次轮询卡片的超时（毫秒）。 */
 constexpr uint16_t kPollTimeoutMs = 100;

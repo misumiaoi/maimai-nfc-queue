@@ -61,6 +61,12 @@ class QueueManager {
    */
   bool expirePending(uint32_t nowMs);
 
+  /** 屏幕刷新及等待移卡期间暂停退出倒计时；暂停时不能确认退出。 */
+  void pausePending();
+
+  /** 提示已显示且卡已移开后，开始完整的确认窗口。重复调用不延长窗口。 */
+  void resumePending(uint32_t nowMs);
+
   /**
    * 移除队首，供现场按钮使用（队首的人走了但没退出）。
    *
@@ -122,6 +128,7 @@ class QueueManager {
   size_t count_ = 0;
   uint32_t confirmWindowMs_;
   bool pendingActive_ = false;
+  bool pendingPaused_ = false;
   uint64_t pendingHash_ = 0;
   uint32_t pendingSinceMs_ = 0;
 };

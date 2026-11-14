@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "CardId.h"
+#include "CardPresence.h"
 #include "QueueManager.h"
 #include "TUnion.h"
 
@@ -199,7 +200,52 @@ static void testSerialize() {
   CHECK(bad.size() == 1);
 }
 
+static void testContinuousPresence() {
+  CardPresence presence(3);
+  QueueManager q(5000);
+  const CardId a = cardWithTail(0x11, 0x11);
+  for (uint32_t now = 0; now <= 60000; now += 100) {
+    if (presence.observe(true)) q.handleTap(a, now);
+  }
+  CHECK(q.size() == 1 && !q.hasPending());
+  // 短暂漏读不能重新触发，连续三次无卡才算移开。
+  presence.observe(false);
+  presence.observe(false);
+  CHECK(!presence.observe(true));
+  for (int i = 0; i < 3; ++i) presence.observe(false);
+  CHECK(!presence.waitingForRemoval());
+  CHECK(presence.observe(true));
+  CHECK(q.handleTap(a, 61000).outcome == TapOutcome::ConfirmLeave);
+  for (int i = 0; i < 100; ++i) CHECK(!presence.observe(true));
+  CHECK(q.size() == 1);
+}
+
+static void testPausedConfirmation() {
+  QueueManager q(5000);
+  const CardId a = cardWithTail(0x11, 0x11);
+  q.handleTap(a, 0);
+  q.handleTap(a, 100);
+  q.pausePending();
+  CHECK(!q.expirePending(60000));  // 慢刷新及一直贴卡不消耗窗口。
+  q.resumePending(60000);
+  q.resumePending(64000);  // 重复通知不能延长窗口。
+  CHECK(!q.expirePending(65000));
+  CHECK(q.expirePending(65001));
+
+  q.handleTap(a, 70000);
+  q.pausePending();
+  q.resumePending(0xFFFFFF00u);
+  CHECK(q.handleTap(a, 0x00000100u).outcome == TapOutcome::Left);
+
+  q.handleTap(a, 0);
+  q.handleTap(a, 1);
+  q.pausePending();
+  CHECK(q.handleTap(a, 2).outcome == TapOutcome::ConfirmLeave);
+}
+
 int main() {
+  testContinuousPresence();
+  testPausedConfirmation();
   testParse();
   testCardId();
   testJoinAndLeave();
