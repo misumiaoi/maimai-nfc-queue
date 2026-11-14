@@ -6,11 +6,13 @@
 #include <string.h>
 
 #include "TUnion.h"
+#include "CardPresence.h"
 #include "config.h"
 
 namespace {
 
 Adafruit_PN532 g_nfc(config::kPinNfcIrq, config::kPinNfcRst, &Wire);
+CardPresence g_presence(config::kRemovalMisses);
 
 constexpr size_t kRespMax = 96;
 constexpr size_t kCmdMax = 32;
@@ -57,10 +59,12 @@ CardReadResult CardReader::poll() {
 
   uint8_t uid[7];
   uint8_t uidLen = 0;
-  if (!g_nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen,
-                                 config::kPollTimeoutMs)) {
-    return result;
-  }
+  const bool wasWaiting = g_presence.waitingForRemoval();
+  const bool present = g_nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen,
+                                                config::kPollTimeoutMs);
+  const bool accepted = g_presence.observe(present);
+  if (wasWaiting && !g_presence.waitingForRemoval()) result.status = ReadStatus::Removed;
+  if (!accepted) return result;
 
   if (readCardNumber(result.number)) {
     result.status = ReadStatus::Ok;
@@ -68,21 +72,4 @@ CardReadResult CardReader::poll() {
     result.status = ReadStatus::Unsupported;
   }
   return result;
-}
-
-bool CardReader::waitForRemoval(uint32_t maxMs) {
-  uint8_t uid[7];
-  uint8_t uidLen = 0;
-  uint8_t misses = 0;
-  const uint32_t start = millis();
-
-  while (millis() - start < maxMs) {
-    if (g_nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLen,
-                                  config::kPollTimeoutMs)) {
-      misses = 0;
-    } else if (++misses >= config::kRemovalMisses) {
-      return true;
-    }
-  }
-  return false;
 }

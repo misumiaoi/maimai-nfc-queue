@@ -1,6 +1,5 @@
 #include "QueueStorage.h"
 
-#include <Arduino.h>
 #include <Preferences.h>
 #include <esp_system.h>
 
@@ -13,19 +12,22 @@ const char* const kKeySalt = "salt";
 
 }  // namespace
 
-void QueueStorage::begin() { g_prefs.begin(kNamespace, false); }
+bool QueueStorage::begin() { return g_prefs.begin(kNamespace, false); }
 
-uint64_t QueueStorage::loadOrCreateSalt() {
-  uint64_t salt = g_prefs.getULong64(kKeySalt, 0);
-  if (salt == 0) {
-    salt = (static_cast<uint64_t>(esp_random()) << 32) | esp_random();
-    if (salt == 0) salt = 1;
-    g_prefs.putULong64(kKeySalt, salt);
+bool QueueStorage::loadOrCreateSalt(uint64_t& salt) {
+  if (g_prefs.isKey(kKeySalt)) {
+    salt = g_prefs.getULong64(kKeySalt, 0);
+    return salt != 0;
   }
-  return salt;
+  // 已有队列丢失盐时不能生成新盐，否则旧队列里的卡将无法再识别。
+  if (g_prefs.isKey(kKeyQueue)) return false;
+  salt = (static_cast<uint64_t>(esp_random()) << 32) | esp_random();
+  if (salt == 0) salt = 1;
+  return g_prefs.putULong64(kKeySalt, salt) == sizeof(salt);
 }
 
 bool QueueStorage::load(QueueManager& queue) {
+  if (!g_prefs.isKey(kKeyQueue)) return true;
   size_t len = g_prefs.getBytesLength(kKeyQueue);
   if (len == 0 || len > QueueManager::kMaxSerializedBytes) return false;
 

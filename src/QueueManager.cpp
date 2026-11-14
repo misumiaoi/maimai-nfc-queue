@@ -33,7 +33,7 @@ TapResult QueueManager::handleTap(const CardId& id, uint32_t nowMs) {
   int idx = indexOf(id.hash);
 
   if (idx >= 0) {
-    bool confirmed = pendingActive_ && pendingHash_ == id.hash &&
+    bool confirmed = pendingActive_ && !pendingPaused_ && pendingHash_ == id.hash &&
                      (nowMs - pendingSinceMs_) <= confirmWindowMs_;
     if (confirmed) {
       removeAt(static_cast<size_t>(idx));
@@ -41,6 +41,7 @@ TapResult QueueManager::handleTap(const CardId& id, uint32_t nowMs) {
       return {TapOutcome::Left, idx + 1};
     }
     pendingActive_ = true;
+    pendingPaused_ = false;
     pendingHash_ = id.hash;
     pendingSinceMs_ = nowMs;
     return {TapOutcome::ConfirmLeave, idx + 1};
@@ -57,11 +58,22 @@ TapResult QueueManager::handleTap(const CardId& id, uint32_t nowMs) {
 }
 
 bool QueueManager::expirePending(uint32_t nowMs) {
-  if (pendingActive_ && (nowMs - pendingSinceMs_) > confirmWindowMs_) {
+  if (pendingActive_ && !pendingPaused_ && (nowMs - pendingSinceMs_) > confirmWindowMs_) {
     pendingActive_ = false;
     return true;
   }
   return false;
+}
+
+void QueueManager::pausePending() {
+  if (pendingActive_) pendingPaused_ = true;
+}
+
+void QueueManager::resumePending(uint32_t nowMs) {
+  if (pendingActive_ && pendingPaused_) {
+    pendingSinceMs_ = nowMs;
+    pendingPaused_ = false;
+  }
 }
 
 bool QueueManager::removeHead() {

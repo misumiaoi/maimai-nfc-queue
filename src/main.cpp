@@ -15,14 +15,24 @@ QueueStorage g_storage;
 QueueDisplay g_display;
 CardReader g_reader;
 uint64_t g_salt = 0;
+bool g_ready = false;
+
+bool saveOrStop(const QueueManager& previous) {
+  if (g_storage.save(g_queue)) return true;
+  g_queue = previous;
+  g_ready = false;
+  g_display.showFatal("STORAGE ERROR");
+  return false;
+}
 
 /**
- * 处理一次成功读到的交通联合卡：更新队列、保存、刷新屏幕，并等卡拿开。
+ * 处理一次新的贴卡：更新队列、保存、刷新屏幕。
  *
  * @param number 10 字节卡号。
  */
 void onCard(const uint8_t number[kCardNumberBytes]) {
   const CardId id = makeCardId(number, g_salt);
+  const QueueManager previous = g_queue;
   const TapResult r = g_queue.handleTap(id, millis());
 
   char message[32];
@@ -34,7 +44,8 @@ void onCard(const uint8_t number[kCardNumberBytes]) {
       snprintf(message, sizeof(message), "QUEUE FULL");
       break;
     case TapOutcome::ConfirmLeave:
-      snprintf(message, sizeof(message), "#%d: TAP AGAIN TO LEAVE", r.position);
+      g_queue.pausePending();
+      snprintf(message, sizeof(message), "#%d: LIFT, TAP TO LEAVE", r.position);
       break;
     case TapOutcome::Left:
       snprintf(message, sizeof(message), "LEFT #%d", r.position);
@@ -42,37 +53,40 @@ void onCard(const uint8_t number[kCardNumberBytes]) {
   }
 
   if (r.outcome == TapOutcome::Joined || r.outcome == TapOutcome::Left) {
-    g_storage.save(g_queue);
+    if (!saveOrStop(previous)) return;
   }
   g_display.render(g_queue, message);
-  g_reader.waitForRemoval(config::kRemovalWaitMs);
 }
 
 /** 处理读到卡但不是交通联合卡的情况：只提示，不改队列。 */
 void onUnsupportedCard() {
   g_display.render(g_queue, "UNSUPPORTED CARD");
-  g_reader.waitForRemoval(config::kRemovalWaitMs);
 }
 
 /**
  * 检查跳过按钮，长按达到 config::kSkipHoldMs 才移除队首，避免误触。
  *
- * 按下后会阻塞到松开，松开前读卡器不工作。
+ * 非阻塞；一次长按只移除一次，松开后才能再次触发。
  */
 void pollSkipButton() {
-  if (digitalRead(config::kPinSkipButton) != LOW) return;
-
-  const uint32_t start = millis();
-  bool fired = false;
-  while (digitalRead(config::kPinSkipButton) == LOW) {
-    if (!fired && millis() - start >= config::kSkipHoldMs) {
-      fired = true;
-      if (g_queue.removeHead()) {
-        g_storage.save(g_queue);
-        g_display.render(g_queue, "HEAD REMOVED");
-      }
+  static bool held = false;
+  static bool fired = false;
+  static uint32_t start = 0;
+  if (digitalRead(config::kPinSkipButton) != LOW) {
+    held = false;
+    fired = false;
+    return;
+  }
+  if (!held) {
+    held = true;
+    start = millis();
+  }
+  if (!fired && millis() - start >= config::kSkipHoldMs) {
+    fired = true;
+    const QueueManager previous = g_queue;
+    if (g_queue.removeHead() && saveOrStop(previous)) {
+      g_display.render(g_queue, "HEAD REMOVED");
     }
-    delay(20);
   }
 }
 
@@ -83,26 +97,34 @@ void setup() {
   setCpuFrequencyMhz(config::kCpuMhz);
   pinMode(config::kPinSkipButton, INPUT_PULLUP);
 
-  g_storage.begin();
-  g_salt = g_storage.loadOrCreateSalt();
-  g_storage.load(g_queue);
-
   g_display.begin();
+  if (!g_storage.begin() || !g_storage.loadOrCreateSalt(g_salt) || !g_storage.load(g_queue)) {
+    g_display.showFatal("STORAGE ERROR");
+    return;
+  }
   if (!g_reader.begin()) {
     g_display.showFatal("PN532 NOT FOUND");
-    while (true) delay(1000);
+    return;
   }
   g_display.render(g_queue, nullptr);
+  g_ready = true;
 }
 
 void loop() {
+  if (!g_ready) {
+    delay(100);
+    return;
+  }
   const CardReadResult r = g_reader.poll();
   if (r.status == ReadStatus::Ok) {
     onCard(r.number);
   } else if (r.status == ReadStatus::Unsupported) {
     onUnsupportedCard();
+  } else if (r.status == ReadStatus::Removed) {
+    g_queue.resumePending(millis());
   }
 
+  if (!g_ready) return;
   if (g_queue.expirePending(millis())) {
     g_display.render(g_queue, nullptr);
   }

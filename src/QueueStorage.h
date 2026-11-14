@@ -12,20 +12,20 @@
 class QueueStorage {
  public:
   /** 打开存储区，必须在其他方法之前调用一次。 */
-  void begin();
+  bool begin();
 
   /**
    * 读取本机随机盐，首次启动时生成并保存。
    *
    * 盐用来给卡号做散列，每台设备不同。
    */
-  uint64_t loadOrCreateSalt();
+  bool loadOrCreateSalt(uint64_t& salt);
 
   /**
    * 从闪存恢复队列。
    *
    * @param queue 输出：恢复后的队列。没有保存过或数据损坏时保持原样。
-   * @return 成功恢复返回 true。
+   * @return 成功恢复或首次启动没有队列返回 true；数据损坏、读取失败返回 false。
    */
   bool load(QueueManager& queue);
 
