@@ -3,10 +3,12 @@
 #include <Arduino.h>
 #include <Fonts/FreeMonoBold12pt7b.h>
 #include <Fonts/FreeMonoBold18pt7b.h>
+#include <Fonts/FreeMonoBold9pt7b.h>
 #include <GxEPD2_BW.h>
 #include <SPI.h>
 #include <stdio.h>
 
+#include "RowLabel.h"
 #include "config.h"
 
 namespace {
@@ -20,8 +22,9 @@ Panel g_epd(PanelDriver(config::kPinEpdCs, config::kPinEpdDc, config::kPinEpdRst
                         config::kPinEpdBusy));
 
 constexpr int kHeaderHeight = 40;
-constexpr int kRowHeight = 30;
-constexpr int kFooterY = 292;
+constexpr int kRowHeight = 26;
+constexpr int kStatusY = 258;
+constexpr int kHintY = 290;
 
 /** 以给定基线位置画一段文字。 */
 void drawText(const GFXfont* font, int x, int baselineY, uint16_t color, const char* text) {
@@ -48,7 +51,8 @@ void QueueDisplay::begin() {
   g_epd.setRotation(0);
 }
 
-void QueueDisplay::render(const QueueManager& queue, const char* message) {
+void QueueDisplay::render(const QueueManager& queue, const NameRegistry& names,
+                          const char* message) {
   const bool full = (refreshCount_ % config::kFullRefreshEvery) == 0;
   ++refreshCount_;
 
@@ -59,7 +63,19 @@ void QueueDisplay::render(const QueueManager& queue, const char* message) {
   }
   g_epd.firstPage();
   do {
-    drawQueue(queue, message);
+    drawQueue(queue, names, message);
+  } while (g_epd.nextPage());
+}
+
+void QueueDisplay::showBindPrompt(const char* name) {
+  g_epd.setFullWindow();
+  g_epd.firstPage();
+  do {
+    g_epd.fillScreen(GxEPD_WHITE);
+    drawText(&FreeMonoBold18pt7b, 8, 90, GxEPD_BLACK, "TAP CARD");
+    drawText(&FreeMonoBold18pt7b, 8, 150, GxEPD_BLACK, name != nullptr ? name : "");
+    drawText(&FreeMonoBold12pt7b, 8, 200, GxEPD_BLACK, "BINDS THIS NAME");
+    drawText(&FreeMonoBold12pt7b, 8, 240, GxEPD_BLACK, "DOES NOT JOIN");
   } while (g_epd.nextPage());
 }
 
@@ -73,11 +89,12 @@ void QueueDisplay::showFatal(const char* message) {
   } while (g_epd.nextPage());
 }
 
-void QueueDisplay::drawQueue(const QueueManager& queue, const char* message) {
+void QueueDisplay::drawQueue(const QueueManager& queue, const NameRegistry& names,
+                             const char* message) {
   const int width = g_epd.width();
   g_epd.fillScreen(GxEPD_WHITE);
 
-  char text[40];
+  char text[48];
 
   drawText(&FreeMonoBold18pt7b, 8, 28, GxEPD_BLACK, "MAIMAI QUEUE");
   snprintf(text, sizeof(text), "%u", static_cast<unsigned>(queue.size()));
@@ -88,39 +105,46 @@ void QueueDisplay::drawQueue(const QueueManager& queue, const char* message) {
   const size_t playSlots = static_cast<size_t>(config::kMachineCount) * 2;
   const size_t visible = queue.size() < config::kVisibleRows ? queue.size() : config::kVisibleRows;
   const int pending = queue.pendingIndex();
+  const GFXfont* rowFont = &FreeMonoBold12pt7b;
 
   for (size_t i = 0; i < visible; ++i) {
     const int top = kHeaderHeight + static_cast<int>(i) * kRowHeight;
-    const int baseline = top + 24;
+    const int baseline = top + 20;
     const bool inverted = static_cast<int>(i) == pending;
     const uint16_t fg = inverted ? GxEPD_WHITE : GxEPD_BLACK;
 
     if (inverted) g_epd.fillRect(0, top, width, kRowHeight, GxEPD_BLACK);
 
-    char label[kTailDigits + 1];
-    queue.label(i, label);
+    char label[kRowLabelCap];
+    formatRowLabel(queue, names, i, label);
     snprintf(text, sizeof(text), "%2u  %s", static_cast<unsigned>(i + 1), label);
-    drawText(&FreeMonoBold18pt7b, 8, baseline, fg, text);
+    drawText(rowFont, 8, baseline, fg, text);
 
     if (i < playSlots) {
-      drawText(&FreeMonoBold18pt7b, width - 8 - textWidth(&FreeMonoBold18pt7b, "PLAY"),
-               baseline, fg, "PLAY");
+      const int playW = textWidth(rowFont, "PLAY");
+      const int playX = width - 8 - playW;
+      if (8 + textWidth(rowFont, text) + 8 < playX) {
+        drawText(rowFont, playX, baseline, fg, "PLAY");
+      }
     }
     if (i + 1 == playSlots && queue.size() > playSlots && !inverted) {
       g_epd.drawLine(0, top + kRowHeight - 1, width, top + kRowHeight - 1, GxEPD_BLACK);
     }
   }
 
-  if (queue.size() > visible) {
-    snprintf(text, sizeof(text), "+%u MORE", static_cast<unsigned>(queue.size() - visible));
-    drawText(&FreeMonoBold12pt7b, width - 8 - textWidth(&FreeMonoBold12pt7b, text),
-             kFooterY - 22, GxEPD_BLACK, text);
-  }
-
-  g_epd.drawLine(0, kFooterY - 18, width, kFooterY - 18, GxEPD_BLACK);
+  g_epd.drawLine(0, kStatusY - 18, width, kStatusY - 18, GxEPD_BLACK);
   const char* footer = message;
   if (footer == nullptr) {
     footer = queue.hasPending() ? "TAP AGAIN TO LEAVE" : "TAP CARD TO JOIN";
   }
-  drawText(&FreeMonoBold12pt7b, 8, kFooterY, GxEPD_BLACK, footer);
+  drawText(&FreeMonoBold12pt7b, 8, kStatusY, GxEPD_BLACK, footer);
+
+  snprintf(text, sizeof(text), "WIFI %s", config::kWifiSsid);
+  drawText(&FreeMonoBold9pt7b, 8, kHintY, GxEPD_BLACK, text);
+  if (queue.size() > visible) {
+    char more[16];
+    snprintf(more, sizeof(more), "+%u MORE", static_cast<unsigned>(queue.size() - visible));
+    drawText(&FreeMonoBold9pt7b, width - 8 - textWidth(&FreeMonoBold9pt7b, more), kHintY,
+             GxEPD_BLACK, more);
+  }
 }

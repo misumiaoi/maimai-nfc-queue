@@ -3,5 +3,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 g++ -std=c++17 -Wall -Wextra -Wpedantic -fsanitize=address,undefined -Isrc \
   test/test_logic.cpp src/CardId.cpp src/TUnion.cpp src/QueueManager.cpp \
+  src/NameRegistry.cpp src/Registrar.cpp src/RowLabel.cpp \
   -o /tmp/maimai_queue_test
 /tmp/maimai_queue_test
