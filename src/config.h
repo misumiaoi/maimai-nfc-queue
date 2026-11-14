@@ -44,13 +44,22 @@ constexpr uint8_t kRemovalMisses = 3;
 /** 长按跳过按钮多久，才移除队首（毫秒）。 */
 constexpr uint32_t kSkipHoldMs = 3000;
 
+/**
+ * 登记名字用的开放热点。手机连上后打开网页填写名字，再贴卡。
+ * 热点上只有名字，卡号不经过 WiFi。
+ */
+constexpr char kWifiSsid[] = "maimai-queue";
+
+/** 提交名字后，等待贴卡完成绑定的时间（毫秒）。超时则这次登记作废。 */
+constexpr uint32_t kBindWindowMs = 60000;
+
 /** 每局部刷新多少次后做一次整屏刷新，用来清除残影。 */
 constexpr uint8_t kFullRefreshEvery = 20;
 
 /** 屏幕上最多显示多少行队列。 */
 constexpr uint8_t kVisibleRows = 7;
 
-/** CPU 频率（MHz）。不开无线，降频即可省电。 */
+/** CPU 频率（MHz）。80 MHz 可以带登记用的热点，也比满频省电。 */
 constexpr uint32_t kCpuMhz = 80;
 
 }  // namespace config

@@ -14,7 +14,9 @@ constexpr size_t kTailDigits = 6;
  *
  * 队列只保存这个结构，不保存完整卡号：
  *  - hash：卡号加本机随机盐后的 64 位散列，用来判断“是不是同一张卡”。
- *  - tail：卡号末尾 6 位数字，用来在屏幕上显示。
+ *  - tail：卡号末尾 6 位数字，用来在没绑定名字时显示。
+ *
+ * 显示名不在这个结构里。NameRegistry 用同一个 hash 另存名字，同样不存卡号。
  */
 struct CardId {
   uint64_t hash;
