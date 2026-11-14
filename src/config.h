@@ -41,8 +41,32 @@ constexpr uint16_t kPollTimeoutMs = 100;
 /** 连续多少次轮询不到卡，才认为卡已经拿开。 */
 constexpr uint8_t kRemovalMisses = 3;
 
-/** 长按跳过按钮多久，才移除队首（毫秒）。 */
+/** 每隔多少次轮询做一次读卡器健康检查，检查失败会自动重连 PN532。 */
+constexpr uint8_t kReaderHealthCheckEvery = 20;
+
+/** 长按跳过按钮多久，进入移人模式（毫秒）。 */
 constexpr uint32_t kSkipHoldMs = 3000;
+
+/** 单次按住超过这个时长就不再累计，防止一直按着卡死流程（毫秒）。 */
+constexpr uint32_t kMaxHoldMs = 6000;
+
+/** 移人模式下多久没有操作就自动退出（毫秒）。 */
+constexpr uint32_t kKickModeIdleMs = 8000;
+
+/** 店员卡登记流程等卡的最长时间（毫秒）。 */
+constexpr uint32_t kProvisionTimeoutMs = 15000;
+
+/** 刷一次店员卡之后，按钮权限保留多久（毫秒）。 */
+constexpr uint32_t kAdminUnlockMs = 60000;
+
+/** 队列里超过这个时长的条目视为残留，自动移除（毫秒，0 表示不启用）。 */
+constexpr uint32_t kStaleEntryMs = 6UL * 60UL * 60UL * 1000UL;
+
+/** 一个上机位超过这个时长就在屏幕上标红提示，不自动踢人（毫秒）。 */
+constexpr uint32_t kPlayLimitMs = 15UL * 60UL * 1000UL;
+
+/** 上机时长显示的最短更新间隔（毫秒）。 */
+constexpr uint32_t kClockRefreshMs = 60000;
 
 /** 每局部刷新多少次后做一次整屏刷新，用来清除残影。 */
 constexpr uint8_t kFullRefreshEvery = 20;

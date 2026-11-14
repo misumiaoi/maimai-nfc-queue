@@ -8,7 +8,8 @@
 enum class ReadStatus {
   NoCard,       ///< 读卡器范围内没有卡。
   Ok,           ///< 读到交通联合卡，number 有效。
-  Unsupported,  ///< 有卡，但不是能读出卡号的交通联合卡（门禁卡、银行卡、其他城市卡等）。
+  Unsupported,  ///< 有卡，但不是能读出卡号的交通联合卡（门禁卡、银行卡等）。
+  ReaderFault,  ///< 读卡器本身掉线，自动重连也失败。
 };
 
 /** CardReader::poll 的返回值。 */
@@ -22,6 +23,10 @@ struct CardReadResult {
  *
  * 不使用芯片 UID，因为手机里的虚拟卡 UID 可能每次都变。卡号来自应用层的
  * SELECT 响应（见 TUnion.h），不读余额和交易记录，也不写卡。
+ *
+ * 每 config::kReaderHealthCheckEvery 次轮询做一次固件版本检查，读不到就重启
+ * I2C 和芯片；连续失败后返回 ReaderFault，让上层把“读卡器掉了”显示出来，
+ * 而不是安静地停在最后一帧。
  */
 class CardReader {
  public:
@@ -54,4 +59,10 @@ class CardReader {
 
   /** 在已激活的卡上读出卡号。 */
   bool readCardNumber(uint8_t out[kCardNumberBytes]);
+
+  /** 重新初始化 I2C 和芯片，用于总线被拉死之后的恢复。 */
+  bool recover();
+
+  uint32_t pollCount_ = 0;
+  uint8_t recoverAttempts_ = 0;
 };
