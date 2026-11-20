@@ -49,9 +49,7 @@ TapResult QueueManager::handleTap(const CardId& id, uint32_t nowMs) {
   pendingActive_ = false;
   if (count_ >= kMaxQueue) return {TapOutcome::QueueFull, 0};
 
-  Entry& e = entries_[count_];
-  e.hash = id.hash;
-  memcpy(e.tail, id.tail, sizeof(e.tail));
+  entries_[count_] = id;
   ++count_;
   return {TapOutcome::Joined, static_cast<int>(count_)};
 }
@@ -62,6 +60,18 @@ bool QueueManager::expirePending(uint32_t nowMs) {
     return true;
   }
   return false;
+}
+
+void QueueManager::restartPendingTimer(uint32_t nowMs) {
+  if (pendingActive_) pendingSinceMs_ = nowMs;
+}
+
+bool QueueManager::clear() {
+  const bool hadEntries = count_ > 0;
+  count_ = 0;
+  memset(entries_, 0, sizeof(entries_));
+  pendingActive_ = false;
+  return hadEntries;
 }
 
 bool QueueManager::removeHead() {
