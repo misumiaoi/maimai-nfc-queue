@@ -7,6 +7,7 @@
 #include "CardId.h"
 #include "QueueManager.h"
 #include "TUnion.h"
+#include "TapGate.h"
 
 static int g_failed = 0;
 
@@ -66,6 +67,90 @@ static void testCardId() {
   uint8_t n[kCardNumberBytes] = {0x03, 0x10, 0x51, 0x70, 0x01, 0x01, 0x70, 0x70, 0x12, 0x34};
   CHECK(makeCardId(n, 1).hash != makeCardId(n, 2).hash);
   CHECK(makeCardId(n, 1).hash == makeCardId(n, 1).hash);
+
+  // 散列算法固定下来：改了它，升级固件后闪存里旧队列的卡都会认不出来。
+  const uint8_t m[kCardNumberBytes] = {0x03, 0x10, 0x51, 0x70, 0x01, 0x01, 0x70, 0x12, 0x34, 0x56};
+  CHECK(makeCardId(m, 0x1122334455667788ULL).hash == 0x978693c8f57d31abULL);
+}
+
+static void testUidCardId() {
+  const uint8_t uid7[] = {0x04, 0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6};
+  CardId a = makeUidCardId(uid7, sizeof(uid7), 1);
+  CHECK(strcmp(a.tail, "D4E5F6") == 0);
+  CHECK(makeUidCardId(uid7, sizeof(uid7), 1).hash == a.hash);
+  CHECK(makeUidCardId(uid7, sizeof(uid7), 2).hash != a.hash);
+
+  // 长度不同的 UID 即使前缀相同也是不同的卡。
+  CHECK(makeUidCardId(uid7, 4, 1).hash != a.hash);
+
+  // 短 UID 的显示末尾前面补 0。
+  const uint8_t uid2[] = {0xAB, 0xCD};
+  CHECK(strcmp(makeUidCardId(uid2, 2, 1).tail, "00ABCD") == 0);
+
+  // 10 字节的 UID 和 10 字节的卡号字节完全相同，散列也不能相同。
+  const uint8_t same[kCardNumberBytes] = {0x03, 0x10, 0x51, 0x70, 0x01, 0x01, 0x70, 0x12, 0x34, 0x56};
+  CHECK(makeUidCardId(same, sizeof(same), 1).hash != makeCardId(same, 1).hash);
+}
+
+static void testFixedUid() {
+  const uint8_t random4[] = {0x08, 0x12, 0x34, 0x56};
+  const uint8_t fixed4[] = {0x5A, 0x12, 0x34, 0x56};
+  const uint8_t seven[] = {0x08, 1, 2, 3, 4, 5, 6};
+  const uint8_t ten[] = {0x08, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+  CHECK(!isFixedUid(random4, 4));
+  CHECK(isFixedUid(fixed4, 4));
+  CHECK(isFixedUid(seven, 7));
+  CHECK(isFixedUid(ten, 10));
+  CHECK(!isFixedUid(fixed4, 0));
+  CHECK(!isFixedUid(fixed4, 3));
+}
+
+static void testGateHoldsWhileCardStays() {
+  TapGate g(3, 1000);
+  CHECK(g.accepts(1, 0));
+  g.onHandled(1);
+  CHECK(g.waitingForRemoval());
+  CHECK(!g.accepts(2, 0));
+
+  // 卡一直贴着，多久都不放行。
+  for (uint32_t t = 0; t < 60000; t += 100) {
+    CHECK(!g.observe(true, t));
+  }
+  CHECK(g.waitingForRemoval());
+
+  // 断续读不到不够 3 次，不算拿开。
+  CHECK(!g.observe(false, 60000));
+  CHECK(!g.observe(false, 60100));
+  CHECK(!g.observe(true, 60200));
+  CHECK(!g.observe(false, 60300));
+  CHECK(!g.observe(false, 60400));
+  CHECK(g.observe(false, 60500));
+  CHECK(!g.waitingForRemoval());
+}
+
+static void testGateCooldown() {
+  TapGate g(1, 1000);
+  g.onHandled(7);
+  CHECK(g.observe(false, 5000));
+
+  // 同一张卡在冷却时间内被忽略，别的卡不受影响。
+  CHECK(!g.accepts(7, 5500));
+  CHECK(g.accepts(8, 5500));
+
+  // 被忽略的那次拿开后，冷却时间仍从第一次拿开算。
+  g.onIgnored();
+  CHECK(g.observe(false, 5800));
+  CHECK(!g.accepts(7, 5900));
+  CHECK(g.accepts(7, 6000));
+}
+
+static void testGateUnsupportedCard() {
+  TapGate g(2, 1000);
+  g.onIgnored();
+  CHECK(g.waitingForRemoval());
+  CHECK(!g.observe(false, 0));
+  CHECK(g.observe(false, 100));
+  CHECK(g.accepts(1, 100));
 }
 
 static void testJoinAndLeave() {
@@ -105,6 +190,22 @@ static void testConfirmTimeout() {
   r = q.handleTap(a, 13000);
   CHECK(r.outcome == TapOutcome::ConfirmLeave);
   CHECK(q.size() == 1);
+}
+
+static void testRestartPendingTimer() {
+  QueueManager q(5000);
+  CardId a = cardWithTail(0x11, 0x11);
+  q.handleTap(a, 0);
+  q.handleTap(a, 1000);
+  // 屏幕刷新用了 4 秒，从刷新完开始计时。
+  q.restartPendingTimer(5000);
+  CHECK(!q.expirePending(9000));
+  TapResult r = q.handleTap(a, 9500);
+  CHECK(r.outcome == TapOutcome::Left);
+
+  // 没有待确认的卡时什么都不做。
+  q.restartPendingTimer(20000);
+  CHECK(!q.hasPending());
 }
 
 static void testOtherCardClearsPending() {
@@ -173,6 +274,20 @@ static void testRemoveHead() {
   CHECK(q.size() == 1 && q.at(0).hash == b.hash);
 }
 
+static void testClear() {
+  QueueManager q(5000);
+  CHECK(!q.clear());
+  CardId a = cardWithTail(0x11, 0x11);
+  q.handleTap(a, 0);
+  q.handleTap(cardWithTail(0x22, 0x22), 0);
+  q.handleTap(a, 100);
+  CHECK(q.hasPending());
+  CHECK(q.clear());
+  CHECK(q.size() == 0 && !q.hasPending());
+  TapResult r = q.handleTap(a, 200);
+  CHECK(r.outcome == TapOutcome::Joined && r.position == 1);
+}
+
 static void testSerialize() {
   QueueManager q(5000);
   CardId a = cardWithTail(0x11, 0x11);
@@ -202,13 +317,20 @@ static void testSerialize() {
 int main() {
   testParse();
   testCardId();
+  testUidCardId();
+  testFixedUid();
+  testGateHoldsWhileCardStays();
+  testGateCooldown();
+  testGateUnsupportedCard();
   testJoinAndLeave();
   testConfirmTimeout();
+  testRestartPendingTimer();
   testOtherCardClearsPending();
   testTimeWrap();
   testFull();
   testLabelCollision();
   testRemoveHead();
+  testClear();
   testSerialize();
 
   if (g_failed == 0) {

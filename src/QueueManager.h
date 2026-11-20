@@ -8,11 +8,8 @@
 /** 队列最多容纳多少张卡。 */
 constexpr size_t kMaxQueue = 24;
 
-/** 队列里的一项：卡的散列和用于显示的末尾数字。 */
-struct Entry {
-  uint64_t hash;
-  char tail[kTailDigits + 1];
-};
+/** 队列里的一项，和 CardId 相同：卡的散列和用于显示的末尾数字。 */
+using Entry = CardId;
 
 /** 一次刷卡处理后的结果类型。 */
 enum class TapOutcome {
@@ -62,11 +59,26 @@ class QueueManager {
   bool expirePending(uint32_t nowMs);
 
   /**
+   * 把待确认退出的计时起点改成 nowMs。
+   *
+   * 刷卡后要先刷新墨水屏、等卡拿开，这段时间不应该算进确认窗口。调用方在屏幕显示出
+   * “再刷一次退出”之后调用。没有待确认的卡时不做任何事。
+   */
+  void restartPendingTimer(uint32_t nowMs);
+
+  /**
    * 移除队首，供现场按钮使用（队首的人走了但没退出）。
    *
    * @return 队列非空并已移除返回 true。
    */
   bool removeHead();
+
+  /**
+   * 清空整个队列，供现场按钮使用（例如开门营业前清掉前一天的队列）。
+   *
+   * @return 清空前队列非空返回 true。
+   */
+  bool clear();
 
   /** 队列当前长度。 */
   size_t size() const { return count_; }
