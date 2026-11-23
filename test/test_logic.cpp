@@ -8,6 +8,7 @@
 #include "QueueManager.h"
 #include "TUnion.h"
 #include "TapGate.h"
+#include "config.h"
 
 static int g_failed = 0;
 
@@ -288,6 +289,15 @@ static void testClear() {
   CHECK(r.outcome == TapOutcome::Joined && r.position == 1);
 }
 
+static void testBeepCounts() {
+  CHECK(config::kBeepsTap == 1);
+  CHECK(config::kBeepsStep == 1);
+  CHECK(config::kBeepsDelete == 2);
+  CHECK(config::kBeepsError == 3);
+  CHECK(config::kBeepOnMs > 0);
+  CHECK(config::kBeepGapMs > 0);
+}
+
 static void testSerialize() {
   QueueManager q(5000);
   CardId a = cardWithTail(0x11, 0x11);
@@ -331,6 +341,7 @@ int main() {
   testLabelCollision();
   testRemoveHead();
   testClear();
+  testBeepCounts();
   testSerialize();
 
   if (g_failed == 0) {

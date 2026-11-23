@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <stdio.h>
 
+#include "Buzzer.h"
 #include "CardId.h"
 #include "CardReader.h"
 #include "QueueDisplay.h"
@@ -15,11 +16,28 @@ QueueManager g_queue(config::kConfirmWindowMs);
 QueueStorage g_storage;
 QueueDisplay g_display;
 CardReader g_reader;
+Buzzer g_buzzer;
 TapGate g_gate(config::kRemovalMisses, config::kSameCardCooldownMs);
 uint64_t g_salt = 0;
 
+/** 刷卡被确认时短鸣一声；队列已满是错误，短鸣三声。 */
+void beepForTap(TapOutcome outcome) {
+  switch (outcome) {
+    case TapOutcome::QueueFull:
+      g_buzzer.beep(config::kBeepsError);
+      break;
+    case TapOutcome::Joined:
+    case TapOutcome::ConfirmLeave:
+    case TapOutcome::Left:
+      g_buzzer.beep(config::kBeepsTap);
+      break;
+  }
+}
+
 /**
  * 处理一次刷卡：更新队列、保存、刷新屏幕。
+ *
+ * 鸣叫在刷新屏幕之前，不用等墨水屏画完才知道这次刷卡的结果。
  *
  * @param id 刷卡的身份。
  */
@@ -42,6 +60,7 @@ void onCard(const CardId& id) {
       break;
   }
 
+  beepForTap(r.outcome);
   if (r.outcome == TapOutcome::Joined || r.outcome == TapOutcome::Left) {
     g_storage.save(g_queue);
   }
@@ -60,6 +79,7 @@ void onRead(const CardReadResult& r) {
     case ReadStatus::NoCard:
       return;
     case ReadStatus::Unsupported:
+      g_buzzer.beep(config::kBeepsError);
       g_display.render(g_queue, "UNSUPPORTED CARD");
       g_gate.onIgnored();
       return;
@@ -83,6 +103,9 @@ void onRead(const CardReadResult& r) {
  * 检查管理按钮。按住 config::kSkipHoldMs 后松开移除队首，
  * 按住 config::kClearHoldMs 后松开清空队列。到达每个时长时屏幕会提示松开后的效果。
  *
+ * 队列非空时，到达每个时长短鸣一声（操作的一步）。松开后成功移除队首短鸣两声，
+ * 成功清空短鸣一声。鸣叫在刷新屏幕之前。
+ *
  * 按下后会阻塞到松开，松开前读卡器不工作。
  */
 void pollButton() {
@@ -96,10 +119,16 @@ void pollButton() {
     const uint32_t held = millis() - start;
     if (action != Action::Clear && held >= config::kClearHoldMs) {
       action = Action::Clear;
-      if (g_queue.size() > 0) g_display.render(g_queue, "RELEASE: CLEAR ALL");
+      if (g_queue.size() > 0) {
+        g_buzzer.beep(config::kBeepsStep);
+        g_display.render(g_queue, "RELEASE: CLEAR ALL");
+      }
     } else if (action == Action::None && held >= config::kSkipHoldMs) {
       action = Action::Skip;
-      if (g_queue.size() > 0) g_display.render(g_queue, "RELEASE: REMOVE #1");
+      if (g_queue.size() > 0) {
+        g_buzzer.beep(config::kBeepsStep);
+        g_display.render(g_queue, "RELEASE: REMOVE #1");
+      }
     }
     delay(20);
   }
@@ -114,6 +143,11 @@ void pollButton() {
     message = "HEAD REMOVED";
   }
   if (changed) {
+    if (action == Action::Skip) {
+      g_buzzer.beep(config::kBeepsDelete);
+    } else {
+      g_buzzer.beep(config::kBeepsStep);
+    }
     g_storage.save(g_queue);
     g_display.render(g_queue, message);
   }
@@ -125,6 +159,7 @@ void setup() {
   Serial.begin(115200);
   setCpuFrequencyMhz(config::kCpuMhz);
   pinMode(config::kPinSkipButton, INPUT_PULLUP);
+  g_buzzer.begin();
 
   g_storage.begin();
   g_salt = g_storage.loadOrCreateSalt();
@@ -132,6 +167,7 @@ void setup() {
 
   g_display.begin();
   if (!g_reader.begin()) {
+    g_buzzer.beep(config::kBeepsError);
     g_display.showFatal("PN532 NOT FOUND");
     while (true) delay(1000);
   }
